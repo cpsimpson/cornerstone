@@ -1,5 +1,3 @@
-import $ from 'jquery';
-
 export class VideoGallery {
     constructor($element) {
         this.$player = $element.find('[data-video-player]');
@@ -37,7 +35,7 @@ export class VideoGallery {
 }
 
 export default function videoGallery() {
-    const pluginKey = 'videoGallery';
+    const pluginKey = 'video-gallery';
     const $videoGallery = $(`[data-${pluginKey}]`);
 
     $videoGallery.each((index, element) => {

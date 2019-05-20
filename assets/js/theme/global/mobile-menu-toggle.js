@@ -1,4 +1,3 @@
-import $ from 'jquery';
 import _ from 'lodash';
 import mediaQueryListFactory from '../common/media-query-list';
 import { CartPreviewEvents } from './cart-preview';
@@ -62,7 +61,7 @@ export class MobileMenuToggle {
     bindEvents() {
         this.$toggle.on('click', this.onToggleClick);
         this.$header.on(CartPreviewEvents.open, this.onCartPreviewOpen);
-        this.$navList.on('click .navPages-action', this.onSubMenuClick);
+        this.$subMenus.on('click', this.onSubMenuClick);
 
         if (this.mediumMediaQueryList && this.mediumMediaQueryList.addListener) {
             this.mediumMediaQueryList.addListener(this.onMediumMediaQueryMatch);

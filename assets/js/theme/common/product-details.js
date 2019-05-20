@@ -1,11 +1,9 @@
-import $ from 'jquery';
 import utils from '@bigcommerce/stencil-utils';
 import 'foundation-sites/js/foundation/foundation';
 import 'foundation-sites/js/foundation/foundation.reveal';
 import ImageGallery from '../product/image-gallery';
-import modalFactory from '../global/modal';
+import modalFactory, { showAlertModal } from '../global/modal';
 import _ from 'lodash';
-import swal from 'sweetalert2';
 import Wishlist from '../wishlist';
 
 export default class ProductDetails {
@@ -17,7 +15,8 @@ export default class ProductDetails {
         this.imageGallery.init();
         this.listenQuantityChange();
         this.initRadioAttributes();
-        this.wishlist = new Wishlist().load();
+        Wishlist.load(this.context);
+        this.getTabRequests();
 
         const $form = $('form[data-cart-item-add]', $scope);
         const $productOptionsElement = $('[data-product-option-change]', $form);
@@ -26,6 +25,7 @@ export default class ProductDetails {
 
         $productOptionsElement.on('change', event => {
             this.productOptionsChanged(event);
+            this.setProductVariant();
         });
 
         $form.on('submit', event => {
@@ -57,6 +57,122 @@ export default class ProductDetails {
     }
 
     /**
+     * https://stackoverflow.com/questions/49672992/ajax-request-fails-when-sending-formdata-including-empty-file-input-in-safari
+     * Safari browser with jquery 3.3.1 has an issue uploading empty file parameters. This function removes any empty files from the form params
+     * @param formData: FormData object
+     * @returns FormData object
+     */
+    filterEmptyFilesFromForm(formData) {
+        try {
+            for (const [key, val] of formData) {
+                if (val instanceof File && !val.name && !val.size) {
+                    formData.delete(key);
+                }
+            }
+        } catch (e) {
+            console.error(e); // eslint-disable-line no-console
+        }
+        return formData;
+    }
+
+    setProductVariant() {
+        const unsatisfiedRequiredFields = [];
+        const options = [];
+
+        $.each($('[data-product-attribute]'), (index, value) => {
+            const optionLabel = value.children[0].innerText;
+            const optionTitle = optionLabel.split(':')[0].trim();
+            const required = optionLabel.toLowerCase().includes('required');
+            const type = value.getAttribute('data-product-attribute');
+
+            if ((type === 'input-file' || type === 'input-text' || type === 'input-number') && value.querySelector('input').value === '' && required) {
+                unsatisfiedRequiredFields.push(value);
+            }
+
+            if (type === 'textarea' && value.querySelector('textarea').value === '' && required) {
+                unsatisfiedRequiredFields.push(value);
+            }
+
+            if (type === 'date') {
+                const isSatisfied = Array.from(value.querySelectorAll('select')).every((select) => select.selectedIndex !== 0);
+
+                if (isSatisfied) {
+                    const dateString = Array.from(value.querySelectorAll('select')).map((x) => x.value).join('-');
+                    options.push(`${optionTitle}:${dateString}`);
+
+                    return;
+                }
+
+                if (required) {
+                    unsatisfiedRequiredFields.push(value);
+                }
+            }
+
+            if (type === 'set-select') {
+                const select = value.querySelector('select');
+                const selectedIndex = select.selectedIndex;
+
+                if (selectedIndex !== 0) {
+                    options.push(`${optionTitle}:${select.options[selectedIndex].innerText}`);
+
+                    return;
+                }
+
+                if (required) {
+                    unsatisfiedRequiredFields.push(value);
+                }
+            }
+
+            if (type === 'set-rectangle' || type === 'set-radio' || type === 'swatch' || type === 'input-checkbox' || type === 'product-list') {
+                const checked = value.querySelector(':checked');
+                if (checked) {
+                    if (type === 'set-rectangle' || type === 'set-radio' || type === 'product-list') {
+                        const label = checked.labels[0].innerText;
+                        if (label) {
+                            options.push(`${optionTitle}:${label}`);
+                        }
+                    }
+
+                    if (type === 'swatch') {
+                        const label = checked.labels[0].children[0];
+                        if (label) {
+                            options.push(`${optionTitle}:${label.title}`);
+                        }
+                    }
+
+                    if (type === 'input-checkbox') {
+                        options.push(`${optionTitle}:Yes`);
+                    }
+
+                    return;
+                }
+
+                if (type === 'input-checkbox') {
+                    options.push(`${optionTitle}:No`);
+                }
+
+                if (required) {
+                    unsatisfiedRequiredFields.push(value);
+                }
+            }
+        });
+
+        let productVariant = unsatisfiedRequiredFields.length === 0 ? options.sort().join(', ') : 'unsatisfied';
+        const view = $('.productView');
+
+        if (productVariant) {
+            productVariant = productVariant === 'unsatisfied' ? '' : productVariant;
+            if (view.attr('data-event-type')) {
+                view.attr('data-product-variant', productVariant);
+            } else {
+                const productName = view.find('.productView-title')[0].innerText;
+                const card = $(`[data-name="${productName}"]`);
+                card.attr('data-product-variant', productVariant);
+            }
+        }
+    }
+
+    /**
      * Since $productView can be dynamically inserted using render_with,
      * We have to retrieve the respective elements
      *
@@ -74,12 +190,12 @@ export default class ProductDetails {
                 $div: $('.rrp-price--withoutTax', $scope),
                 $span: $('[data-product-rrp-price-without-tax]', $scope),
             },
-            nonSaleWithPrice: {
-                $div: $('.non-sale-price---withTax', $scope),
+            nonSaleWithTax: {
+                $div: $('.non-sale-price--withTax', $scope),
                 $span: $('[data-product-non-sale-price-with-tax]', $scope),
             },
-            nonSaleWithoutPrice: {
-                $div: $('.non-sale-price---withoutTax', $scope),
+            nonSaleWithoutTax: {
+                $div: $('.non-sale-price--withoutTax', $scope),
                 $span: $('[data-product-non-sale-price-without-tax]', $scope),
             },
             priceSaved: {
@@ -89,6 +205,9 @@ export default class ProductDetails {
             priceNowLabel: {
                 $span: $('.price-now-label', $scope),
             },
+            priceLabel: {
+                $span: $('.price-label', $scope),
+            },
             $weight: $('.productView-info [data-product-weight]', $scope),
             $increments: $('.form-field--increments :input', $scope),
             $addToCart: $('#form-action-addToCart', $scope),
@@ -97,8 +216,14 @@ export default class ProductDetails {
                 $container: $('.form-field--stock', $scope),
                 $input: $('[data-product-stock]', $scope),
             },
-            $sku: $('[data-product-sku]'),
-            $upc: $('[data-product-upc]'),
+            sku: {
+                $label: $('dt.sku-label', $scope),
+                $value: $('[data-product-sku]', $scope),
+            },
+            upc: {
+                $label: $('dt.upc-label', $scope),
+                $value: $('[data-product-upc]', $scope),
+            },
             quantity: {
                 $text: $('.incrementTotal', $scope),
                 $input: $('[name=qty\\[\\]]', $scope),
@@ -234,7 +359,7 @@ export default class ProductDetails {
         this.$overlay.show();
 
         // Add item to cart
-        utils.api.cart.itemAdd(new FormData(form), (err, response) => {
+        utils.api.cart.itemAdd(this.filterEmptyFilesFromForm(new FormData(form)), (err, response) => {
             const errorMessage = err || response.data.error;
 
             $addToCartBtn
@@ -249,17 +374,14 @@ export default class ProductDetails {
                 const tmp = document.createElement('DIV');
                 tmp.innerHTML = errorMessage;
 
-                return swal({
-                    text: tmp.textContent || tmp.innerText,
-                    type: 'error',
-                });
+                return showAlertModal(tmp.textContent || tmp.innerText);
             }
 
             // Open preview modal and update content
             if (this.previewModal) {
                 this.previewModal.open();
 
-                this.updateCartContent(this.previewModal, response.data.cart_item.hash);
+                this.updateCartContent(this.previewModal, response.data.cart_item.id);
             } else {
                 this.$overlay.show();
                 // if no modal, redirect to the cart page
@@ -271,14 +393,14 @@ export default class ProductDetails {
     /**
      * Get cart contents
      *
-     * @param {String} cartItemHash
+     * @param {String} cartItemId
      * @param {Function} onComplete
      */
-    getCartContent(cartItemHash, onComplete) {
+    getCartContent(cartItemId, onComplete) {
         const options = {
             template: 'cart/preview',
             params: {
-                suggest: cartItemHash,
+                suggest: cartItemId,
             },
             config: {
                 cart: {
@@ -309,11 +431,11 @@ export default class ProductDetails {
      * Update cart content
      *
      * @param {Modal} modal
-     * @param {String} cartItemHash
+     * @param {String} cartItemId
      * @param {Function} onComplete
      */
-    updateCartContent(modal, cartItemHash, onComplete) {
-        this.getCartContent(cartItemHash, (err, response) => {
+    updateCartContent(modal, cartItemId, onComplete) {
+        this.getCartContent(cartItemId, (err, response) => {
             if (err) {
                 return;
             }
@@ -358,10 +480,11 @@ export default class ProductDetails {
     clearPricingNotFound(viewModel) {
         viewModel.rrpWithTax.$div.hide();
         viewModel.rrpWithoutTax.$div.hide();
-        viewModel.nonSaleWithPrice.$div.hide();
-        viewModel.nonSaleWithoutPrice.$div.hide();
+        viewModel.nonSaleWithTax.$div.hide();
+        viewModel.nonSaleWithoutTax.$div.hide();
         viewModel.priceSaved.$div.hide();
         viewModel.priceNowLabel.$span.hide();
+        viewModel.priceLabel.$span.hide();
     }
 
     /**
@@ -372,10 +495,12 @@ export default class ProductDetails {
         this.clearPricingNotFound(viewModel);
 
         if (price.with_tax) {
+            viewModel.priceLabel.$span.show();
             viewModel.$priceWithTax.html(price.with_tax.formatted);
         }
 
         if (price.without_tax) {
+            viewModel.priceLabel.$span.show();
             viewModel.$priceWithoutTax.html(price.without_tax.formatted);
         }
 
@@ -395,15 +520,17 @@ export default class ProductDetails {
         }
 
         if (price.non_sale_price_with_tax) {
-            viewModel.nonSaleWithPrice.$div.show();
+            viewModel.priceLabel.$span.hide();
+            viewModel.nonSaleWithTax.$div.show();
             viewModel.priceNowLabel.$span.show();
-            viewModel.nonSaleWithPrice.$span.html(price.non_sale_price_with_tax.formatted);
+            viewModel.nonSaleWithTax.$span.html(price.non_sale_price_with_tax.formatted);
         }
 
         if (price.non_sale_price_without_tax) {
-            viewModel.nonSaleWithoutPrice.$div.show();
+            viewModel.priceLabel.$span.hide();
+            viewModel.nonSaleWithoutTax.$div.show();
             viewModel.priceNowLabel.$span.show();
-            viewModel.nonSaleWithoutPrice.$span.html(price.non_sale_price_without_tax.formatted);
+            viewModel.nonSaleWithoutTax.$span.html(price.non_sale_price_without_tax.formatted);
         }
     }
 
@@ -431,12 +558,20 @@ export default class ProductDetails {
 
         // If SKU is available
         if (data.sku) {
-            viewModel.$sku.text(data.sku);
+            viewModel.sku.$value.text(data.sku);
+            viewModel.sku.$label.show();
+        } else {
+            viewModel.sku.$label.hide();
+            viewModel.sku.$value.text('');
         }
 
         // If UPC is available
         if (data.upc) {
-            viewModel.$upc.text(data.upc);
+            viewModel.upc.$value.text(data.upc);
+            viewModel.upc.$label.show();
+        } else {
+            viewModel.upc.$label.hide();
+            viewModel.upc.$value.text('');
         }
 
         // if stock view is on (CP settings)
@@ -444,6 +579,9 @@ export default class ProductDetails {
             // if the stock container is hidden, show
             viewModel.stock.$container.removeClass('u-hiddenVisually');
 
+            viewModel.stock.$input.text(data.stock);
+        } else {
+            viewModel.stock.$container.addClass('u-hiddenVisually');
             viewModel.stock.$input.text(data.stock);
         }
 
@@ -575,5 +713,26 @@ export default class ProductDetails {
 
             $radio.attr('data-state', $radio.prop('checked'));
         });
+    }
+
+    /**
+     * Check for fragment identifier in URL requesting a specific tab
+     */
+    getTabRequests() {
+        if (window.location.hash && window.location.hash.indexOf('#tab-') === 0) {
+            const $activeTab = $('.tabs').has(`[href='${window.location.hash}']`);
+            const $tabContent = $(`${window.location.hash}`);
+
+            if ($activeTab.length > 0) {
+                $activeTab.find('.tab')
+                    .removeClass('is-active')
+                    .has(`[href='${window.location.hash}']`)
+                    .addClass('is-active');
+
+                $tabContent.addClass('is-active')
+                    .siblings()
+                    .removeClass('is-active');
+            }
+        }
     }
 }
